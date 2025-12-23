@@ -103,8 +103,7 @@ public class EWrapperImpl implements EWrapper {
         logger.info(ticker + " ConId: " + conId);
         
         if (marketData != null) {
-            marketData.setConId(ticker, conId);
-            marketData.requestUnderlyingMarketData(ticker, conId);
+            marketData.handleContractDetails(ticker, contractDetails);
         }
     }
 
@@ -140,10 +139,6 @@ public class EWrapperImpl implements EWrapper {
             if (requestType == MarketData.RequestType.UNDERLYING_MARKET_DATA) {
                 if (field == TickType.LAST.ordinal() || field == TickType.CLOSE.ordinal()) {
                     marketData.setUnderlyingPrice(tickerId, price);
-                }
-            } else if (requestType == MarketData.RequestType.OPTION_MARKET_DATA) {
-                if (field == TickType.LAST.ordinal() || field == TickType.CLOSE.ordinal()) {
-                    marketData.setAtmOptionPrice(tickerId, price);
                 }
             }
         }
