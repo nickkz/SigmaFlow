@@ -9,6 +9,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.Arrays;
+import java.util.Scanner;
 
 public class Main {
 
@@ -19,6 +20,8 @@ public class Main {
         // To run with live data: java com.sigmaflow.Main live MSFT NVDA
         // To run with simulated data: java com.sigmaflow.Main simulated TSLA
         // Default is simulated with MSFT, NVDA, TSLA
+
+        logger.info("Start Program...");
 
         MarketData.DataSource dataSource = MarketData.DataSource.SIMULATED;
         String[] tickers = {"MSFT", "NVDA", "TSLA"};
@@ -48,6 +51,7 @@ public class Main {
             } catch (InterruptedException e) {
                 logger.error("Error during sleep", e);
                 Thread.currentThread().interrupt();
+                return;
             }
         }
 
@@ -56,14 +60,12 @@ public class Main {
 
         // In a real-time application, you'd keep the application running to receive data.
         if (dataSource == MarketData.DataSource.LIVE) {
-            logger.info("Waiting for real-time data. Press Ctrl+C to exit.");
+            logger.info("Waiting for real-time data. Press [ENTER] to exit.");
             // Keep the main thread alive to receive callbacks
-            try {
-                Thread.sleep(10000); // Wait for 10 seconds to receive some data
-            } catch (InterruptedException e) {
-                logger.error("Error during sleep", e);
-                Thread.currentThread().interrupt();
-            }
+            Scanner scanner = new Scanner(System.in);
+            scanner.nextLine();
+            
+            logger.info("Disconnecting...");
             api.disconnect();
         }
 
