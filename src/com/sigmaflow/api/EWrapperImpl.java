@@ -114,7 +114,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void securityDefinitionOptionalParameter(int reqId, String exchange, int underlyingConId, String tradingClass, String multiplier, Set<String> expirations, Set<Double> strikes) {
-        logger.info("Received Option Chain Parameters for ReqId: " + reqId);
+        logger.debug("Received Option Chain Parameters for ReqId: {}", reqId);
         if (marketData != null) {
             marketData.processOptionChainParameters(reqId, expirations, strikes);
         }
@@ -122,7 +122,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void securityDefinitionOptionalParameterEnd(int reqId) {
-        logger.info("Finished receiving option chain parameters for ReqId: " + reqId);
+        logger.info("Finished receiving option chain parameters for ReqId: {}", reqId);
     }
 
     @Override
@@ -133,7 +133,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attrib) {
-        logger.info(String.format("Tick Price. Ticker Id: %d, Field: %s, Price: %f", tickerId, TickType.getField(field), price));
+        logger.debug(String.format("Tick Price. Ticker Id: %d, Field: %s, Price: %f", tickerId, TickType.getField(field), price));
         if (marketData != null) {
             MarketData.RequestType requestType = marketData.getRequestType(tickerId);
             if (requestType == MarketData.RequestType.UNDERLYING_MARKET_DATA) {
@@ -146,7 +146,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void tickSize(int tickerId, int field, Decimal size) {
-        logger.info(String.format("Tick Size. Ticker Id: %d, Field: %s, Size: %s", tickerId, TickType.getField(field), size));
+        logger.debug(String.format("Tick Size. Ticker Id: %d, Field: %s, Size: %s", tickerId, TickType.getField(field), size));
     }
 
     @Override
@@ -161,9 +161,9 @@ public class EWrapperImpl implements EWrapper {
             if (requestType == MarketData.RequestType.HISTORICAL_DATA) {
                 marketData.addHistoricalBar(reqId, bar);
             } else if (requestType == MarketData.RequestType.HISTORICAL_VOLATILITY) {
-                marketData.setHistoricalVolatility(reqId, bar.close());
+                marketData.setHistoricalVolatility(reqId, bar.time(), bar.close());
             } else if (requestType == MarketData.RequestType.OPTION_IMPLIED_VOLATILITY) {
-                marketData.setOptionImpliedVolatility(reqId, bar.close());
+                marketData.setOptionImpliedVolatility(reqId, bar.time(), bar.close());
             }
         }
     }

@@ -12,6 +12,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -47,8 +48,9 @@ public class MarketData {
     // Data storage for report
     private final Map<String, ContractDetails> contractDetailsMap = new ConcurrentHashMap<>();
     private final Map<String, List<Bar>> historicalBars = new ConcurrentHashMap<>();
-    private final Map<String, Double> historicalVolatility = new ConcurrentHashMap<>();
-    private final Map<String, Double> optionImpliedVolatility = new ConcurrentHashMap<>();
+    // Changed to store volatility by Date. Using ConcurrentSkipListMap to keep dates sorted.
+    private final Map<String, Map<LocalDate, Double>> historicalVolatility = new ConcurrentHashMap<>();
+    private final Map<String, Map<LocalDate, Double>> optionImpliedVolatility = new ConcurrentHashMap<>();
     private final Map<String, String> optionChainSummary = new ConcurrentHashMap<>();
 
 
@@ -182,10 +184,15 @@ public class MarketData {
 
     public void processOptionChainParameters(int reqId, Set<String> expirations, Set<Double> strikes) {
         String ticker = reqIdToTickerMap.get(reqId);
-        Double underlyingPrice = underlyingPrices.get(ticker);
 
-        if (ticker == null || underlyingPrice == null) {
-            logger.error("Could not process option chain for reqId " + reqId + ". Ticker or price not found.");
+        if (ticker == null) {
+            logger.debug("reqId {}. Ticker not found.", reqId);
+            return;
+        }
+
+        Double underlyingPrice = underlyingPrices.get(ticker);
+        if (underlyingPrice == null) {
+            logger.debug("reqId {}. price not found.", reqId);
             return;
         }
 
@@ -218,17 +225,27 @@ public class MarketData {
         checkAndDisplay(ticker);
     }
 
-    public void setHistoricalVolatility(int reqId, double volatility) {
+    public void setHistoricalVolatility(int reqId, String dateStr, double volatility) {
         String ticker = reqIdToTickerMap.get(reqId);
         if (ticker != null) {
-            historicalVolatility.put(ticker, volatility);
+            try {
+                LocalDate date = LocalDate.parse(dateStr, DateTimeFormatter.ofPattern("yyyyMMdd"));
+                historicalVolatility.computeIfAbsent(ticker, k -> new ConcurrentSkipListMap<>()).put(date, volatility);
+            } catch (Exception e) {
+                logger.error("Error parsing date for historical volatility: " + dateStr, e);
+            }
         }
     }
 
-    public void setOptionImpliedVolatility(int reqId, double volatility) {
+    public void setOptionImpliedVolatility(int reqId, String dateStr, double volatility) {
         String ticker = reqIdToTickerMap.get(reqId);
         if (ticker != null) {
-            optionImpliedVolatility.put(ticker, volatility);
+            try {
+                LocalDate date = LocalDate.parse(dateStr, DateTimeFormatter.ofPattern("yyyyMMdd"));
+                optionImpliedVolatility.computeIfAbsent(ticker, k -> new ConcurrentSkipListMap<>()).put(date, volatility);
+            } catch (Exception e) {
+                logger.error("Error parsing date for implied volatility: " + dateStr, e);
+            }
         }
     }
     
@@ -250,8 +267,8 @@ public class MarketData {
     private void printTickerReport(String ticker) {
         ContractDetails cd = contractDetailsMap.get(ticker);
         List<Bar> bars = historicalBars.get(ticker);
-        Double histVol = historicalVolatility.get(ticker);
-        Double impVol = optionImpliedVolatility.get(ticker);
+        Map<LocalDate, Double> histVolMap = historicalVolatility.get(ticker);
+        Map<LocalDate, Double> impVolMap = optionImpliedVolatility.get(ticker);
         String chainSummary = optionChainSummary.get(ticker);
 
         System.out.println("\n==================================================");
@@ -259,19 +276,38 @@ public class MarketData {
         System.out.println("==================================================");
         System.out.println("1. Contract Details:");
         System.out.println("   Company Name: " + cd.longName());
-        System.out.println("   Primary Exchange: " + cd.contract().primaryExch()); // or cd.marketName()
+        System.out.println("   Primary Exchange: " + cd.contract().primaryExch());
         System.out.println("--------------------------------------------------");
         System.out.println("2. Historical Daily Prices (Last 30 Days):");
-        if (bars != null) {
-            // Display last 5 for brevity, or all if needed. Let's display start and end.
+        if (bars != null && !bars.isEmpty()) {
             System.out.println("   Total Bars: " + bars.size());
             System.out.println("   First Bar: " + bars.get(0).time() + " Close: " + bars.get(0).close());
             System.out.println("   Last Bar:  " + bars.get(bars.size()-1).time() + " Close: " + bars.get(bars.size()-1).close());
         }
         System.out.println("--------------------------------------------------");
-        System.out.println("3. Historical Volatility (30-day): " + histVol);
+        
+        if (histVolMap != null && !histVolMap.isEmpty()) {
+            ConcurrentSkipListMap<LocalDate, Double> sortedMap = (ConcurrentSkipListMap<LocalDate, Double>) histVolMap;
+            System.out.println("3. Historical Volatility (30-day):");
+            System.out.println("   First Date: " + sortedMap.firstKey() + " Value: " + sortedMap.firstEntry().getValue());
+            System.out.println("   Last Date:  " + sortedMap.lastKey() + " Value: " + sortedMap.lastEntry().getValue());
+            System.out.println("   Data Points: " + histVolMap.size());
+        } else {
+             System.out.println("3. Historical Volatility (30-day): N/A");
+        }
+
         System.out.println("--------------------------------------------------");
-        System.out.println("4. Current Implied Volatility: " + impVol);
+        
+        if (impVolMap != null && !impVolMap.isEmpty()) {
+             ConcurrentSkipListMap<LocalDate, Double> sortedMap = (ConcurrentSkipListMap<LocalDate, Double>) impVolMap;
+             System.out.println("4. Implied Volatility (30-day):");
+             System.out.println("   First Date: " + sortedMap.firstKey() + " Value: " + sortedMap.firstEntry().getValue());
+             System.out.println("   Last Date:  " + sortedMap.lastKey() + " Value: " + sortedMap.lastEntry().getValue());
+             System.out.println("   Data Points: " + impVolMap.size());
+        } else {
+            System.out.println("4. Implied Volatility (30-day): N/A");
+        }
+        
         System.out.println("--------------------------------------------------");
         System.out.println("5. Underlying Option Chain (Filtered):");
         System.out.println(chainSummary);
@@ -288,7 +324,6 @@ public class MarketData {
     }
 
     private void fetchSimulatedMarketData() {
-        // ... (Simulated data logic kept as is or can be updated similarly)
         System.out.println("Simulated data not updated for new report format.");
     }
 
@@ -301,7 +336,6 @@ public class MarketData {
         }
     }
     
-    // ... (Helper methods for simulation)
     private List<OptionContract> getSimulatedOptionChain(String ticker) { return new ArrayList<>(); }
     private double getSimulatedOptionPrice(OptionContract option) { return 0.0; }
     private static class OptionContract {

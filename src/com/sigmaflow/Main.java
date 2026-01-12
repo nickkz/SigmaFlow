@@ -24,7 +24,8 @@ public class Main {
         logger.info("Start Program...");
 
         MarketData.DataSource dataSource = MarketData.DataSource.SIMULATED;
-        String[] tickers = {"MSFT", "NVDA", "TSLA"};
+        // Semi-Conductors https://finviz.com/screener.ashx?v=111&f=ind_semiconductors&o=-marketcap
+        String[] tickers = {"NVDA", "TSM", "AVGO", "MU", "AMD", "INTC", "QCOM", "TXN", "ADI", "ARM"};
 
         if (args.length > 0) {
             if (args[0].equalsIgnoreCase("live")) {
