@@ -48,10 +48,12 @@ public class MarketData {
     // Data storage for report
     private final Map<String, ContractDetails> contractDetailsMap = new ConcurrentHashMap<>();
     private final Map<String, List<Bar>> historicalBars = new ConcurrentHashMap<>();
-    // Changed to store volatility by Date. Using ConcurrentSkipListMap to keep dates sorted.
     private final Map<String, Map<LocalDate, Double>> historicalVolatility = new ConcurrentHashMap<>();
     private final Map<String, Map<LocalDate, Double>> optionImpliedVolatility = new ConcurrentHashMap<>();
     private final Map<String, String> optionChainSummary = new ConcurrentHashMap<>();
+    
+    // Track completed tickers
+    private final Set<String> completedTickers = ConcurrentHashMap.newKeySet();
 
 
     public MarketData(DataSource dataSource, String[] tickers, EWrapperImpl api) {
@@ -105,7 +107,6 @@ public class MarketData {
         Contract contract = createStockContract(ticker);
         contract.conid(conId);
 
-        // Request 1 Month of daily bars
         String endDateTime = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")) + " 16:00:00";
         api.getClient().reqHistoricalData(reqId, contract, endDateTime, "1 M", "1 day", "TRADES", 1, 1, false, null);
     }
@@ -140,22 +141,16 @@ public class MarketData {
             
             Integer conId = tickerToConIdMap.get(ticker);
             if (conId != null) {
-                // 1. Request option chain parameters
                 int optionReqId = nextReqId.getAndIncrement();
                 reqIdToTickerMap.put(optionReqId, ticker);
                 reqIdToRequestType.put(optionReqId, RequestType.OPTION_CHAIN_PARAMS);
                 api.getClient().reqSecDefOptParams(optionReqId, ticker, "", "STK", conId);
 
-                // 2. Request historical data (Prices)
                 requestHistoricalData(ticker, conId);
-                
-                // 3. Request historical volatility
                 requestHistoricalVolatility(ticker, conId);
-
-                // 4. Request implied volatility (for the stock)
                 requestStockImpliedVolatility(ticker, conId);
             }
-            api.getClient().cancelMktData(reqId); // Cancel market data for underlying
+            api.getClient().cancelMktData(reqId);
             reqIdToTickerMap.remove(reqId);
             reqIdToRequestType.remove(reqId);
         }
@@ -186,17 +181,16 @@ public class MarketData {
         String ticker = reqIdToTickerMap.get(reqId);
 
         if (ticker == null) {
-            logger.debug("reqId {}. Ticker not found.", reqId);
+            logger.debug("reqId {}. Ticker or price not found.", reqId);
             return;
         }
 
         Double underlyingPrice = underlyingPrices.get(ticker);
         if (underlyingPrice == null) {
-            logger.debug("reqId {}. price not found.", reqId);
+            logger.debug("reqId {}. Ticker or price not found.", reqId);
             return;
         }
 
-        // Filter expirations to within 1 month
         LocalDate today = LocalDate.now();
         LocalDate oneMonthFromNow = today.plusMonths(1);
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd");
@@ -210,7 +204,6 @@ public class MarketData {
                 })
                 .collect(Collectors.toCollection(TreeSet::new));
 
-        // Filter strikes to within 20% of the underlying price
         double lowerBound = underlyingPrice * 0.8;
         double upperBound = underlyingPrice * 1.2;
         Set<Double> filteredStrikes = strikes.stream()
@@ -260,7 +253,12 @@ public class MarketData {
             optionImpliedVolatility.containsKey(ticker) &&
             optionChainSummary.containsKey(ticker)) {
 
+            completedTickers.add(ticker);
             printTickerReport(ticker);
+            
+            if (completedTickers.size() == tickers.size()) {
+                printFinalStatisticsTable();
+            }
         }
     }
 
@@ -312,6 +310,62 @@ public class MarketData {
         System.out.println("5. Underlying Option Chain (Filtered):");
         System.out.println(chainSummary);
         System.out.println("==================================================\n");
+    }
+
+    private void printFinalStatisticsTable() {
+        System.out.println("\n====================================================================================================");
+        System.out.println("FINAL STATISTICS TABLE");
+        System.out.println("====================================================================================================");
+        System.out.printf("%-10s | %-15s | %-15s | %-15s | %-15s%n", "Ticker", "Diff A (Last-First IV)", "Diff B (Last IV-HV)", "Diff C (Last IV-Ind Avg)", "Sum");
+        System.out.println("----------------------------------------------------------------------------------------------------");
+
+        // Calculate Industry Average Implied Volatility
+        double totalLastImpVol = 0;
+        int count = 0;
+        for (String ticker : tickers) {
+            Map<LocalDate, Double> impVolMap = optionImpliedVolatility.get(ticker);
+            if (impVolMap != null && !impVolMap.isEmpty()) {
+                ConcurrentSkipListMap<LocalDate, Double> sortedMap = (ConcurrentSkipListMap<LocalDate, Double>) impVolMap;
+                totalLastImpVol += sortedMap.lastEntry().getValue();
+                count++;
+            }
+        }
+        double industryAvgImpVol = count > 0 ? totalLastImpVol / count : 0;
+        System.out.println("Industry Average Implied Volatility: " + industryAvgImpVol);
+        System.out.println("----------------------------------------------------------------------------------------------------");
+
+        for (String ticker : tickers) {
+            Map<LocalDate, Double> impVolMap = optionImpliedVolatility.get(ticker);
+            Map<LocalDate, Double> histVolMap = historicalVolatility.get(ticker);
+
+            double diffA = 0;
+            double diffB = 0;
+            double diffC = 0;
+
+            if (impVolMap != null && !impVolMap.isEmpty()) {
+                ConcurrentSkipListMap<LocalDate, Double> sortedImpMap = (ConcurrentSkipListMap<LocalDate, Double>) impVolMap;
+                double lastImpVol = sortedImpMap.lastEntry().getValue();
+                double firstImpVol = sortedImpMap.firstEntry().getValue();
+                
+                // a) Difference between Last Implied Volatility and First Implied Volatility
+                diffA = lastImpVol - firstImpVol;
+
+                // b) Difference between Last Implied Volatility and Last Historical Volatility
+                if (histVolMap != null && !histVolMap.isEmpty()) {
+                    ConcurrentSkipListMap<LocalDate, Double> sortedHistMap = (ConcurrentSkipListMap<LocalDate, Double>) histVolMap;
+                    double lastHistVol = sortedHistMap.lastEntry().getValue();
+                    diffB = lastImpVol - lastHistVol;
+                }
+
+                // c) Difference between Last Implied Volatility and Industry Average Implied Volatility
+                diffC = lastImpVol - industryAvgImpVol;
+            }
+
+            double sum = diffA + diffB + diffC;
+
+            System.out.printf("%-10s | %-15.4f | %-15.4f | %-15.4f | %-15.4f%n", ticker, diffA, diffB, diffC, sum);
+        }
+        System.out.println("====================================================================================================\n");
     }
 
     private Contract createStockContract(String symbol) {
