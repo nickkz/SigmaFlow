@@ -74,4 +74,45 @@ public class Volatility {
         logger.info(String.format("S: %f, K: %f, T: %f, r: %f, Option Price: %f, Type: %s", S, K, T, r, optionPrice, optionType));
         return 0.0; // Return 0.0 for now
     }
+
+    /**
+     * Calculates the theoretical price of a European call or put option using the Black-Scholes formula.
+     *
+     * @param S     Current price of the underlying asset
+     * @param K     Strike price
+     * @param T     Time to expiration in years
+     * @param r     Risk-free interest rate (annualized)
+     * @param sigma Volatility (annualized)
+     * @param type  Option type ("C" for Call, "P" for Put)
+     * @return The theoretical option price
+     */
+    public double calculateOptionPrice(double S, double K, double T, double r, double sigma, String type) {
+        double d1 = (Math.log(S / K) + (r + 0.5 * Math.pow(sigma, 2)) * T) / (sigma * Math.sqrt(T));
+        double d2 = d1 - sigma * Math.sqrt(T);
+
+        if ("C".equalsIgnoreCase(type)) {
+            return S * cumulativeDistribution(d1) - K * Math.exp(-r * T) * cumulativeDistribution(d2);
+        } else {
+            return K * Math.exp(-r * T) * cumulativeDistribution(-d2) - S * cumulativeDistribution(-d1);
+        }
+    }
+
+    private double cumulativeDistribution(double x) {
+        // Approximation of the cumulative distribution function for the standard normal distribution
+        double b1 = 0.319381530;
+        double b2 = -0.356563782;
+        double b3 = 1.781477937;
+        double b4 = -1.821255978;
+        double b5 = 1.330274429;
+        double p = 0.2316419;
+        double c = 1.0 / Math.sqrt(2 * Math.PI);
+
+        if (x >= 0.0) {
+            double t = 1.0 / (1.0 + p * x);
+            return 1.0 - c * Math.exp(-x * x / 2.0) * t * (t * (t * (t * (t * b5 + b4) + b3) + b2) + b1);
+        } else {
+            double t = 1.0 / (1.0 - p * x);
+            return c * Math.exp(-x * x / 2.0) * t * (t * (t * (t * (t * b5 + b4) + b3) + b2) + b1);
+        }
+    }
 }

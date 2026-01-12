@@ -1,5 +1,6 @@
 package com.sigmaflow.data;
 
+import com.sigmaflow.analytics.Volatility;
 import com.sigmaflow.api.EWrapperImpl;
 import com.ib.client.Bar;
 import com.ib.client.Contract;
@@ -51,6 +52,10 @@ public class MarketData {
     private final Map<String, Map<LocalDate, Double>> historicalVolatility = new ConcurrentHashMap<>();
     private final Map<String, Map<LocalDate, Double>> optionImpliedVolatility = new ConcurrentHashMap<>();
     private final Map<String, String> optionChainSummary = new ConcurrentHashMap<>();
+    
+    // Store filtered option chain parameters for trade recommendation
+    private final Map<String, Set<String>> filteredExpirationsMap = new ConcurrentHashMap<>();
+    private final Map<String, Set<Double>> filteredStrikesMap = new ConcurrentHashMap<>();
     
     // Track completed tickers
     private final Set<String> completedTickers = ConcurrentHashMap.newKeySet();
@@ -212,6 +217,13 @@ public class MarketData {
 
         String summary = String.format("Expirations (<= 1 Month): %s\nStrikes (+/- 20%%): %s", filteredExpirations, filteredStrikes);
         optionChainSummary.put(ticker, summary);
+        
+        // Store filtered parameters for later use in trade recommendation
+        // We need all expirations and strikes to find the 2-week maturity one, so let's store the raw sets or filter differently if needed.
+        // The requirement says "maturity closest to 2 weeks from today", which might be outside the 1-month filter used for display.
+        // Let's store the full sets for recommendation logic.
+        filteredExpirationsMap.put(ticker, expirations);
+        filteredStrikesMap.put(ticker, strikes);
 
         reqIdToTickerMap.remove(reqId);
         reqIdToRequestType.remove(reqId);
@@ -319,7 +331,6 @@ public class MarketData {
         System.out.printf("%-10s | %-15s | %-15s | %-15s | %-15s%n", "Ticker", "Diff A (Last-First IV)", "Diff B (Last IV-HV)", "Diff C (Last IV-Ind Avg)", "Sum");
         System.out.println("----------------------------------------------------------------------------------------------------");
 
-        // Calculate Industry Average Implied Volatility
         double totalLastImpVol = 0;
         int count = 0;
         for (String ticker : tickers) {
@@ -334,6 +345,8 @@ public class MarketData {
         System.out.println("Industry Average Implied Volatility: " + industryAvgImpVol);
         System.out.println("----------------------------------------------------------------------------------------------------");
 
+        List<TradeCandidate> candidates = new ArrayList<>();
+
         for (String ticker : tickers) {
             Map<LocalDate, Double> impVolMap = optionImpliedVolatility.get(ticker);
             Map<LocalDate, Double> histVolMap = historicalVolatility.get(ticker);
@@ -347,25 +360,121 @@ public class MarketData {
                 double lastImpVol = sortedImpMap.lastEntry().getValue();
                 double firstImpVol = sortedImpMap.firstEntry().getValue();
                 
-                // a) Difference between Last Implied Volatility and First Implied Volatility
                 diffA = lastImpVol - firstImpVol;
 
-                // b) Difference between Last Implied Volatility and Last Historical Volatility
                 if (histVolMap != null && !histVolMap.isEmpty()) {
                     ConcurrentSkipListMap<LocalDate, Double> sortedHistMap = (ConcurrentSkipListMap<LocalDate, Double>) histVolMap;
                     double lastHistVol = sortedHistMap.lastEntry().getValue();
                     diffB = lastImpVol - lastHistVol;
                 }
 
-                // c) Difference between Last Implied Volatility and Industry Average Implied Volatility
                 diffC = lastImpVol - industryAvgImpVol;
             }
 
             double sum = diffA + diffB + diffC;
+            candidates.add(new TradeCandidate(ticker, sum));
 
             System.out.printf("%-10s | %-15.4f | %-15.4f | %-15.4f | %-15.4f%n", ticker, diffA, diffB, diffC, sum);
         }
         System.out.println("====================================================================================================\n");
+
+        // Find best candidate
+        candidates.sort(Comparator.comparingDouble(TradeCandidate::getSum));
+        if (!candidates.isEmpty()) {
+            TradeCandidate bestCandidate = candidates.get(0);
+            generateTradeRecommendation(bestCandidate.ticker);
+        }
+    }
+
+    private void generateTradeRecommendation(String ticker) {
+        System.out.println("==================================================");
+        System.out.println("RECOMMENDED TRADE");
+        System.out.println("==================================================");
+
+        Set<String> expirations = filteredExpirationsMap.get(ticker);
+        Set<Double> strikes = filteredStrikesMap.get(ticker);
+        Double underlyingPrice = underlyingPrices.get(ticker);
+        Map<LocalDate, Double> impVolMap = optionImpliedVolatility.get(ticker);
+
+        if (expirations == null || strikes == null || underlyingPrice == null || impVolMap == null || impVolMap.isEmpty()) {
+            System.out.println("Insufficient data to generate trade recommendation for " + ticker);
+            return;
+        }
+
+        // Find expiration closest to 2 weeks from today
+        LocalDate today = LocalDate.now();
+        LocalDate twoWeeksFromNow = today.plusWeeks(2);
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd");
+
+        String bestExpiration = expirations.stream()
+                .min(Comparator.comparingLong(exp -> {
+                    try {
+                        LocalDate expDate = LocalDate.parse(exp, formatter);
+                        return Math.abs(ChronoUnit.DAYS.between(twoWeeksFromNow, expDate));
+                    } catch (Exception e) { return Long.MAX_VALUE; }
+                }))
+                .orElse(null);
+
+        // Find strike closest to current price
+        Double bestStrike = strikes.stream()
+                .min(Comparator.comparingDouble(strike -> Math.abs(strike - underlyingPrice)))
+                .orElse(null);
+
+        if (bestExpiration == null || bestStrike == null) {
+            System.out.println("Could not find suitable option contract.");
+            return;
+        }
+
+        // Calculate option price
+        double lastImpVol = ((ConcurrentSkipListMap<LocalDate, Double>) impVolMap).lastEntry().getValue();
+        
+        // Convert expiration string to years for Black-Scholes
+        LocalDate expDate = LocalDate.parse(bestExpiration, formatter);
+        double timeToExpiration = ChronoUnit.DAYS.between(today, expDate) / 365.0;
+        
+        // Assuming risk-free rate of 4.5% for now
+        double riskFreeRate = 0.045; 
+        
+        Volatility volatilityCalculator = new Volatility();
+        double optionPrice = volatilityCalculator.calculateOptionPrice(underlyingPrice, bestStrike, timeToExpiration, riskFreeRate, lastImpVol, "C");
+
+        // Format expiration for display
+        String formattedExpiration = expDate.format(DateTimeFormatter.ofPattern("M/d/yyyy"));
+
+        // Buy Qty 1 AVGO 1/23/2026 350 Call @ 9.85 Total (985)
+        // Sell Qty 50 AVGO @ 349.74 Total 18186
+        
+        double optionTotal = optionPrice * 100;
+        double stockTotal = underlyingPrice * 50;
+
+        System.out.printf("Buy Qty 1 %s %s %.0f Call @ %.2f Total (%.0f)%n", ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
+        System.out.printf("Sell Qty 50 %s @ %.2f Total %.0f%n", ticker, underlyingPrice, stockTotal);
+        System.out.println("--------------------------------------------------");
+        
+        // Scenario Analysis
+        System.out.println("Scenario Analysis (Estimated Profit/Loss):");
+        double[] scenarios = {-0.10, -0.05, 0.0, 0.05, 0.10};
+        
+        for (double scenario : scenarios) {
+            double scenarioPrice = underlyingPrice * (1 + scenario);
+            
+            // Option Profit: max(0, scenarioPrice - strike) * 100 - optionTotal
+            // Note: This is profit at expiration. For a more accurate estimate before expiration, 
+            // we'd need to re-calculate the option price using Black-Scholes with the new underlying price and remaining time.
+            // Assuming we hold to expiration for simplicity or re-pricing with same vol/time for estimation.
+            // Let's re-price the option for a better estimate, assuming volatility and time remain constant (instantaneous shock).
+            double scenarioOptionPrice = volatilityCalculator.calculateOptionPrice(scenarioPrice, bestStrike, timeToExpiration, riskFreeRate, lastImpVol, "C");
+            double optionPnL = (scenarioOptionPrice * 100) - optionTotal;
+            
+            // Underlying Profit (Short): (Entry Price - Scenario Price) * 50
+            double stockPnL = (underlyingPrice - scenarioPrice) * 50;
+            
+            double totalPnL = optionPnL + stockPnL;
+            
+            System.out.printf("Scenario %+.0f%% (Price: %.2f): Option P&L: %.2f, Stock P&L: %.2f, Total P&L: %.2f%n", 
+                    scenario * 100, scenarioPrice, optionPnL, stockPnL, totalPnL);
+        }
+        System.out.println("==================================================");
     }
 
     private Contract createStockContract(String symbol) {
@@ -397,5 +506,19 @@ public class MarketData {
         public OptionContract(String symbol, double strikePrice) { this.symbol = symbol; this.strikePrice = strikePrice; }
         public String getSymbol() { return symbol; }
         public double getStrikePrice() { return strikePrice; }
+    }
+    
+    private static class TradeCandidate {
+        String ticker;
+        double sum;
+
+        public TradeCandidate(String ticker, double sum) {
+            this.ticker = ticker;
+            this.sum = sum;
+        }
+
+        public double getSum() {
+            return sum;
+        }
     }
 }
