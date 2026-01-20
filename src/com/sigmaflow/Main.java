@@ -8,7 +8,12 @@ import com.sigmaflow.trading.OrderManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Scanner;
 
 public class Main {
@@ -17,24 +22,39 @@ public class Main {
 
     public static void main(String[] args) {
         // --- Configuration ---
-        // To run with live data: java com.sigmaflow.Main live MSFT NVDA
+        // To run with live data and tickers from file: java com.sigmaflow.Main live data/finviz.csv
+        // To run with live data and specific tickers: java com.sigmaflow.Main live MSFT NVDA
         // To run with simulated data: java com.sigmaflow.Main simulated TSLA
         // Default is simulated with MSFT, NVDA, TSLA
 
         logger.info("Start Program...");
 
         MarketData.DataSource dataSource = MarketData.DataSource.SIMULATED;
-        // Semi-Conductors https://finviz.com/screener.ashx?v=111&f=ind_semiconductors&o=-marketcap
-        String[] tickers = {"NVDA", "TSM", "AVGO", "MU", "AMD", "INTC", "QCOM", "TXN", "ADI", "ARM"};
+        String[] tickers = {"MSFT", "NVDA", "TSLA"};
 
         if (args.length > 0) {
             if (args[0].equalsIgnoreCase("live")) {
                 dataSource = MarketData.DataSource.LIVE;
             }
+            
             if (args.length > 1) {
-                tickers = Arrays.copyOfRange(args, 1, args.length);
+                String arg1 = args[1];
+                if (arg1.endsWith(".csv")) {
+                    // Assume it's a file path
+                    tickers = readTickersFromCsv(arg1);
+                } else {
+                    // Assume it's a list of tickers
+                    tickers = Arrays.copyOfRange(args, 1, args.length);
+                }
             }
         }
+
+        if (tickers.length == 0) {
+            logger.error("No tickers found. Exiting.");
+            return;
+        }
+        
+        logger.info("Tickers: " + Arrays.toString(tickers));
 
         // 1. Initialize the components
         EWrapperImpl api = new EWrapperImpl();
@@ -75,5 +95,27 @@ public class Main {
         // 6. Manage orders (to be implemented)
 
         logger.info("Volatility Arbitrage Trading Application shutting down.");
+    }
+
+    private static String[] readTickersFromCsv(String filePath) {
+        List<String> tickers = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            // Skip header
+            br.readLine();
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(",");
+                if (values.length > 0) {
+                    // Assuming Ticker is the first column
+                    String ticker = values[0].trim().replace("\"", "");
+                    if (!ticker.isEmpty()) {
+                        tickers.add(ticker);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            logger.error("Error reading CSV file: " + filePath, e);
+        }
+        return tickers.toArray(new String[0]);
     }
 }

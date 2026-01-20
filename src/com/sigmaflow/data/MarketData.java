@@ -218,10 +218,6 @@ public class MarketData {
         String summary = String.format("Expirations (<= 1 Month): %s\nStrikes (+/- 20%%): %s", filteredExpirations, filteredStrikes);
         optionChainSummary.put(ticker, summary);
         
-        // Store filtered parameters for later use in trade recommendation
-        // We need all expirations and strikes to find the 2-week maturity one, so let's store the raw sets or filter differently if needed.
-        // The requirement says "maturity closest to 2 weeks from today", which might be outside the 1-month filter used for display.
-        // Let's store the full sets for recommendation logic.
         filteredExpirationsMap.put(ticker, expirations);
         filteredStrikesMap.put(ticker, strikes);
 
@@ -378,17 +374,23 @@ public class MarketData {
         }
         System.out.println("====================================================================================================\n");
 
-        // Find best candidate
+        // Find best candidate (Smallest Sum -> Long Volatility)
         candidates.sort(Comparator.comparingDouble(TradeCandidate::getSum));
         if (!candidates.isEmpty()) {
-            TradeCandidate bestCandidate = candidates.get(0);
-            generateTradeRecommendation(bestCandidate.ticker);
+            TradeCandidate bestLongVolCandidate = candidates.get(0);
+            generateTradeRecommendation(bestLongVolCandidate.ticker, true);
+        }
+        
+        // Find best candidate (Largest Sum -> Short Volatility)
+        if (!candidates.isEmpty()) {
+            TradeCandidate bestShortVolCandidate = candidates.get(candidates.size() - 1);
+            generateTradeRecommendation(bestShortVolCandidate.ticker, false);
         }
     }
 
-    private void generateTradeRecommendation(String ticker) {
+    private void generateTradeRecommendation(String ticker, boolean isLongVolatility) {
         System.out.println("==================================================");
-        System.out.println("RECOMMENDED TRADE");
+        System.out.println("RECOMMENDED TRADE (" + (isLongVolatility ? "LONG" : "SHORT") + " VOLATILITY)");
         System.out.println("==================================================");
 
         Set<String> expirations = filteredExpirationsMap.get(ticker);
@@ -401,7 +403,6 @@ public class MarketData {
             return;
         }
 
-        // Find expiration closest to 2 weeks from today
         LocalDate today = LocalDate.now();
         LocalDate twoWeeksFromNow = today.plusWeeks(2);
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd");
@@ -415,7 +416,6 @@ public class MarketData {
                 }))
                 .orElse(null);
 
-        // Find strike closest to current price
         Double bestStrike = strikes.stream()
                 .min(Comparator.comparingDouble(strike -> Math.abs(strike - underlyingPrice)))
                 .orElse(null);
@@ -425,49 +425,52 @@ public class MarketData {
             return;
         }
 
-        // Calculate option price
         double lastImpVol = ((ConcurrentSkipListMap<LocalDate, Double>) impVolMap).lastEntry().getValue();
         
-        // Convert expiration string to years for Black-Scholes
         LocalDate expDate = LocalDate.parse(bestExpiration, formatter);
         double timeToExpiration = ChronoUnit.DAYS.between(today, expDate) / 365.0;
-        
-        // Assuming risk-free rate of 4.5% for now
         double riskFreeRate = 0.045; 
         
         Volatility volatilityCalculator = new Volatility();
         double optionPrice = volatilityCalculator.calculateOptionPrice(underlyingPrice, bestStrike, timeToExpiration, riskFreeRate, lastImpVol, "C");
 
-        // Format expiration for display
         String formattedExpiration = expDate.format(DateTimeFormatter.ofPattern("M/d/yyyy"));
-
-        // Buy Qty 1 AVGO 1/23/2026 350 Call @ 9.85 Total (985)
-        // Sell Qty 50 AVGO @ 349.74 Total 18186
         
         double optionTotal = optionPrice * 100;
         double stockTotal = underlyingPrice * 50;
 
-        System.out.printf("Buy Qty 1 %s %s %.0f Call @ %.2f Total (%.0f)%n", ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
-        System.out.printf("Sell Qty 50 %s @ %.2f Total %.0f%n", ticker, underlyingPrice, stockTotal);
+        if (isLongVolatility) {
+            System.out.printf("Buy Qty 1 %s %s %.0f Call @ %.2f Total (%.0f)%n", ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
+            System.out.printf("Sell Qty 50 %s @ %.2f Total %.0f%n", ticker, underlyingPrice, stockTotal);
+        } else {
+            System.out.printf("Sell Qty 1 %s %s %.0f Call @ %.2f Total %.0f%n", ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
+            System.out.printf("Buy Qty 50 %s @ %.2f Total (%.0f)%n", ticker, underlyingPrice, stockTotal);
+        }
         System.out.println("--------------------------------------------------");
         
-        // Scenario Analysis
         System.out.println("Scenario Analysis (Estimated Profit/Loss):");
         double[] scenarios = {-0.10, -0.05, 0.0, 0.05, 0.10};
         
         for (double scenario : scenarios) {
             double scenarioPrice = underlyingPrice * (1 + scenario);
             
-            // Option Profit: max(0, scenarioPrice - strike) * 100 - optionTotal
-            // Note: This is profit at expiration. For a more accurate estimate before expiration, 
-            // we'd need to re-calculate the option price using Black-Scholes with the new underlying price and remaining time.
-            // Assuming we hold to expiration for simplicity or re-pricing with same vol/time for estimation.
-            // Let's re-price the option for a better estimate, assuming volatility and time remain constant (instantaneous shock).
-            double scenarioOptionPrice = volatilityCalculator.calculateOptionPrice(scenarioPrice, bestStrike, timeToExpiration, riskFreeRate, lastImpVol, "C");
-            double optionPnL = (scenarioOptionPrice * 100) - optionTotal;
+            // Option Value at Expiration
+            double valueAtExpiration = Math.max(0, scenarioPrice - bestStrike) * 100;
             
-            // Underlying Profit (Short): (Entry Price - Scenario Price) * 50
-            double stockPnL = (underlyingPrice - scenarioPrice) * 50;
+            double optionPnL;
+            double stockPnL;
+            
+            if (isLongVolatility) {
+                // Long Call: Profit = Value at Expiration - Cost
+                optionPnL = valueAtExpiration - optionTotal;
+                // Short Stock: Profit = (Entry Price - Scenario Price) * Qty
+                stockPnL = (underlyingPrice - scenarioPrice) * 50;
+            } else {
+                // Short Call: Profit = Premium Received - Value at Expiration
+                optionPnL = optionTotal - valueAtExpiration;
+                // Long Stock: Profit = (Scenario Price - Entry Price) * Qty
+                stockPnL = (scenarioPrice - underlyingPrice) * 50;
+            }
             
             double totalPnL = optionPnL + stockPnL;
             
