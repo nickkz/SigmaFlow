@@ -99,7 +99,22 @@ public class EWrapperImpl implements EWrapper {
         if (advancedOrderRejectJson != null && !advancedOrderRejectJson.isEmpty()) {
             error += ", AdvancedJson: " + advancedOrderRejectJson;
         }
-        logger.error(error);
+        if (errorMsg.contains("find EId") || errorMsg.contains("Market data farm connection is OK"))
+            logger.debug(error);
+        else if (errorMsg.contains("No historical market data for"))
+        {
+            String[] errorMsgArr = errorMsg.split(" ");
+            String symbolFull = errorMsgArr[10];
+            String symbol = symbolFull;
+            if (symbolFull.contains("/"))
+            {
+                String[] symbolArr = symbolFull.split("/");
+                symbol = symbolArr[0];
+            }
+            portfolioManager.handleDataError(symbol);
+        }
+        else
+            logger.error(error);
     }
 
     @Override
@@ -109,10 +124,10 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void contractDetails(int reqId, ContractDetails contractDetails) {
-        logger.info("Contract Details Received for ReqId: " + reqId);
+        logger.debug("Contract Details Received for ReqId: {}", reqId);
         String ticker = contractDetails.contract().symbol();
         int conId = contractDetails.contract().conid();
-        logger.info(ticker + " ConId: " + conId);
+        logger.debug("{} ConId: {}", ticker, conId);
         
         if (marketData != null) {
             marketData.handleContractDetails(ticker, contractDetails);
@@ -121,12 +136,12 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void contractDetailsEnd(int reqId) {
-        logger.info("Finished receiving contract details for ReqId: " + reqId);
+        logger.debug("Finished receiving contract details for ReqId: {}", reqId);
     }
 
     @Override
     public void securityDefinitionOptionalParameter(int reqId, String exchange, int underlyingConId, String tradingClass, String multiplier, Set<String> expirations, Set<Double> strikes) {
-        logger.info("Received Option Chain Parameters for ReqId: " + reqId);
+        logger.debug("Received Option Chain Parameters for ReqId: " + reqId);
         if (marketData != null) {
             marketData.processOptionChainParameters(reqId, expirations, strikes);
         }
@@ -134,7 +149,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void securityDefinitionOptionalParameterEnd(int reqId) {
-        logger.info("Finished receiving option chain parameters for ReqId: " + reqId);
+        logger.debug("Finished receiving option chain parameters for ReqId: " + reqId);
     }
 
     @Override
@@ -145,7 +160,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attrib) {
-        logger.info(String.format("Tick Price. Ticker Id: %d, Field: %s, Price: %f", tickerId, TickType.getField(field), price));
+        logger.debug(String.format("Tick Price. Ticker Id: %d, Field: %s, Price: %f", tickerId, TickType.getField(field), price));
         if (marketData != null) {
             MarketData.RequestType requestType = marketData.getRequestType(tickerId);
             if (requestType == MarketData.RequestType.UNDERLYING_MARKET_DATA) {
@@ -158,12 +173,12 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void tickSize(int tickerId, int field, Decimal size) {
-        logger.info(String.format("Tick Size. Ticker Id: %d, Field: %s, Size: %s", tickerId, TickType.getField(field), size));
+        logger.debug(String.format("Tick Size. Ticker Id: %d, Field: %s, Size: %s", tickerId, TickType.getField(field), size));
     }
 
     @Override
     public void tickString(int tickerId, int tickType, String value) {
-        logger.info(String.format("Tick String. Ticker Id: %d, Type: %s, Value: %s", tickerId, TickType.getField(tickType), value));
+        logger.debug(String.format("Tick String. Ticker Id: %d, Type: %s, Value: %s", tickerId, TickType.getField(tickType), value));
     }
 
     @Override

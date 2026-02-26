@@ -76,12 +76,17 @@ public class Main {
             api.connect("127.0.0.1", port, 0); // Use 7496 for TWS, 7497 for Paper, 4002 for IB Gateway
             // Wait for the connection to be established
             try {
-                Thread.sleep(1000);
+                Thread.sleep(2000); // Increased sleep time to ensure connection and valid ID is received
             } catch (InterruptedException e) {
                 logger.error("Error during sleep", e);
                 Thread.currentThread().interrupt();
                 return;
             }
+            
+            // Request portfolio and account information
+            logger.info("Requesting Account and Position Information...");
+            api.getClient().reqAccountSummary(9001, "All", "NetLiquidation");
+            api.getClient().reqPositions();
         }
 
         // 3. Request and display market data
@@ -89,11 +94,7 @@ public class Main {
 
         // In a real-time application, you'd keep the application running to receive data.
         if (dataSource == MarketData.DataSource.LIVE || dataSource == MarketData.DataSource.PAPER_TRADING) {
-            logger.info("Waiting for real-time data.");
-            logger.info("Commands:");
-            logger.info("  t<tradeId> : Place a trade (e.g., t1234)");
-            logger.info("  portfolio  : Generate Portfolio Risk Report");
-            logger.info("  exit       : Quit");
+            logger.info("Data requests initiated. Enter trade ID (e.g., t1234) to place a trade, or 'exit' to quit.");
             
             Scanner scanner = new Scanner(System.in);
             while (true) {
@@ -102,20 +103,12 @@ public class Main {
                     break;
                 } else if (input.startsWith("t")) {
                     marketData.placeTrade(input);
-                } else if ("portfolio".equalsIgnoreCase(input)) {
-                    logger.info("Requesting Portfolio Data...");
-                    api.getClient().reqAccountSummary(9001, "All", "NetLiquidation");
-                    api.getClient().reqPositions();
                 }
             }
             
             logger.info("Disconnecting...");
             api.disconnect();
         }
-
-        // 4. Perform volatility calculations (to be implemented)
-        // 5. Apply the trading strategy (to be implemented)
-        // 6. Manage orders (to be implemented)
 
         logger.info("Volatility Arbitrage Trading Application shutting down.");
     }

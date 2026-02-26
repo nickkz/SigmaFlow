@@ -36,6 +36,7 @@ public class MarketData {
         OPTION_IMPLIED_VOLATILITY
     }
 
+    private static boolean verbose = false;
     private final List<String> tickers;
     private final DataSource dataSource;
     private final EWrapperImpl api;
@@ -182,7 +183,7 @@ public class MarketData {
     public void historicalDataEnd(int reqId, String startDateStr, String endDateStr) {
         String ticker = reqIdToTickerMap.get(reqId);
         if (ticker != null) {
-            logger.info("Finished receiving " + reqIdToRequestType.get(reqId) + " for " + ticker);
+            logger.debug("Finished receiving " + reqIdToRequestType.get(reqId) + " for " + ticker);
             reqIdToTickerMap.remove(reqId);
             reqIdToRequestType.remove(reqId);
             checkAndDisplay(ticker);
@@ -269,7 +270,8 @@ public class MarketData {
             optionChainSummary.containsKey(ticker)) {
 
             completedTickers.add(ticker);
-            printTickerReport(ticker);
+            if (verbose)
+                printTickerReport(ticker);
             
             if (completedTickers.size() == tickers.size()) {
                 printFinalStatisticsTable();
@@ -295,10 +297,10 @@ public class MarketData {
         if (bars != null && !bars.isEmpty()) {
             System.out.println("   Total Bars: " + bars.size());
             System.out.println("   First Bar: " + bars.get(0).time() + " Close: " + bars.get(0).close());
-            System.out.println("   Last Bar:  " + bars.get(bars.size()-1).time() + " Close: " + bars.get(bars.size()-1).close());
+            System.out.println("   Last Bar:  " + bars.get(bars.size() - 1).time() + " Close: " + bars.get(bars.size() - 1).close());
         }
         System.out.println("--------------------------------------------------");
-        
+
         if (histVolMap != null && !histVolMap.isEmpty()) {
             ConcurrentSkipListMap<LocalDate, Double> sortedMap = (ConcurrentSkipListMap<LocalDate, Double>) histVolMap;
             System.out.println("3. Historical Volatility (30-day):");
@@ -306,21 +308,21 @@ public class MarketData {
             System.out.println("   Last Date:  " + sortedMap.lastKey() + " Value: " + sortedMap.lastEntry().getValue());
             System.out.println("   Data Points: " + histVolMap.size());
         } else {
-             System.out.println("3. Historical Volatility (30-day): N/A");
+            System.out.println("3. Historical Volatility (30-day): N/A");
         }
 
         System.out.println("--------------------------------------------------");
-        
+
         if (impVolMap != null && !impVolMap.isEmpty()) {
-             ConcurrentSkipListMap<LocalDate, Double> sortedMap = (ConcurrentSkipListMap<LocalDate, Double>) impVolMap;
-             System.out.println("4. Implied Volatility (30-day):");
-             System.out.println("   First Date: " + sortedMap.firstKey() + " Value: " + sortedMap.firstEntry().getValue());
-             System.out.println("   Last Date:  " + sortedMap.lastKey() + " Value: " + sortedMap.lastEntry().getValue());
-             System.out.println("   Data Points: " + impVolMap.size());
+            ConcurrentSkipListMap<LocalDate, Double> sortedMap = (ConcurrentSkipListMap<LocalDate, Double>) impVolMap;
+            System.out.println("4. Implied Volatility (30-day):");
+            System.out.println("   First Date: " + sortedMap.firstKey() + " Value: " + sortedMap.firstEntry().getValue());
+            System.out.println("   Last Date:  " + sortedMap.lastKey() + " Value: " + sortedMap.lastEntry().getValue());
+            System.out.println("   Data Points: " + impVolMap.size());
         } else {
             System.out.println("4. Implied Volatility (30-day): N/A");
         }
-        
+
         System.out.println("--------------------------------------------------");
         System.out.println("5. Underlying Option Chain (Filtered):");
         System.out.println(chainSummary);
