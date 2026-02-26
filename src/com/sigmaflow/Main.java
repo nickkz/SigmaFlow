@@ -5,6 +5,7 @@ import com.sigmaflow.data.MarketData;
 import com.sigmaflow.analytics.Volatility;
 import com.sigmaflow.strategy.VolatilityArbitrage;
 import com.sigmaflow.trading.OrderManager;
+import com.sigmaflow.trading.PortfolioManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -31,12 +32,16 @@ public class Main {
 
         MarketData.DataSource dataSource = MarketData.DataSource.SIMULATED;
         String[] tickers = {"MSFT", "NVDA", "TSLA"};
+        int port = 7496;
 
         if (args.length > 0) {
             if (args[0].equalsIgnoreCase("live")) {
                 dataSource = MarketData.DataSource.LIVE;
+            } else if (args[0].equalsIgnoreCase("paper")) {
+                dataSource = MarketData.DataSource.PAPER_TRADING;
+                port = 7497;
             }
-            
+
             if (args.length > 1) {
                 String arg1 = args[1];
                 if (arg1.endsWith(".csv")) {
@@ -53,19 +58,22 @@ public class Main {
             logger.error("No tickers found. Exiting.");
             return;
         }
-        
-        logger.info("Tickers: " + Arrays.toString(tickers));
+
+        logger.info("Tickers: {}", Arrays.toString(tickers));
 
         // 1. Initialize the components
         EWrapperImpl api = new EWrapperImpl();
         MarketData marketData = new MarketData(dataSource, tickers, api);
+        PortfolioManager portfolioManager = new PortfolioManager(api);
+        api.setPortfolioManager(portfolioManager);
+        
         Volatility volatility = new Volatility();
         OrderManager orderManager = new OrderManager();
         VolatilityArbitrage strategy = new VolatilityArbitrage();
 
         // 2. Connect to the Interactive Brokers API if needed
-        if (dataSource == MarketData.DataSource.LIVE) {
-            api.connect("127.0.0.1", 7496, 0); // Use 7496 for TWS, 7497 for Paper, 4002 for IB Gateway
+        if (dataSource == MarketData.DataSource.LIVE || dataSource == MarketData.DataSource.PAPER_TRADING) {
+            api.connect("127.0.0.1", port, 0); // Use 7496 for TWS, 7497 for Paper, 4002 for IB Gateway
             // Wait for the connection to be established
             try {
                 Thread.sleep(1000);
@@ -80,11 +88,26 @@ public class Main {
         marketData.fetchMarketData();
 
         // In a real-time application, you'd keep the application running to receive data.
-        if (dataSource == MarketData.DataSource.LIVE) {
-            logger.info("Waiting for real-time data. Press [ENTER] to exit.");
-            // Keep the main thread alive to receive callbacks
+        if (dataSource == MarketData.DataSource.LIVE || dataSource == MarketData.DataSource.PAPER_TRADING) {
+            logger.info("Waiting for real-time data.");
+            logger.info("Commands:");
+            logger.info("  t<tradeId> : Place a trade (e.g., t1234)");
+            logger.info("  portfolio  : Generate Portfolio Risk Report");
+            logger.info("  exit       : Quit");
+            
             Scanner scanner = new Scanner(System.in);
-            scanner.nextLine();
+            while (true) {
+                String input = scanner.nextLine();
+                if ("exit".equalsIgnoreCase(input)) {
+                    break;
+                } else if (input.startsWith("t")) {
+                    marketData.placeTrade(input);
+                } else if ("portfolio".equalsIgnoreCase(input)) {
+                    logger.info("Requesting Portfolio Data...");
+                    api.getClient().reqAccountSummary(9001, "All", "NetLiquidation");
+                    api.getClient().reqPositions();
+                }
+            }
             
             logger.info("Disconnecting...");
             api.disconnect();

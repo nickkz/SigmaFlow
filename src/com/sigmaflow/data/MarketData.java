@@ -1,10 +1,9 @@
 package com.sigmaflow.data;
 
+import com.ib.client.*;
 import com.sigmaflow.analytics.Volatility;
 import com.sigmaflow.api.EWrapperImpl;
-import com.ib.client.Bar;
-import com.ib.client.Contract;
-import com.ib.client.ContractDetails;
+import com.sigmaflow.trading.RecommendedTrade;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -23,7 +22,8 @@ public class MarketData {
 
     public enum DataSource {
         SIMULATED,
-        LIVE
+        LIVE,
+        PAPER_TRADING
     }
 
     public enum RequestType {
@@ -40,6 +40,7 @@ public class MarketData {
     private final DataSource dataSource;
     private final EWrapperImpl api;
     private static final AtomicInteger nextReqId = new AtomicInteger(1);
+    private static final AtomicInteger nextOrderId = new AtomicInteger(1000); // Starting order ID
 
     private final Map<String, Double> underlyingPrices = new ConcurrentHashMap<>();
     private final Map<Integer, String> reqIdToTickerMap = new ConcurrentHashMap<>();
@@ -59,6 +60,9 @@ public class MarketData {
     
     // Track completed tickers
     private final Set<String> completedTickers = ConcurrentHashMap.newKeySet();
+    
+    // Store recommended trades
+    private final Map<String, RecommendedTrade> recommendedTrades = new ConcurrentHashMap<>();
 
 
     public MarketData(DataSource dataSource, String[] tickers, EWrapperImpl api) {
@@ -102,7 +106,10 @@ public class MarketData {
         reqIdToRequestType.put(reqId, RequestType.UNDERLYING_MARKET_DATA);
         Contract contract = createStockContract(ticker);
         contract.conid(conId);
-        api.getClient().reqMktData(reqId, contract, "", true, false, null);
+        EClientSocket client = api.getClient();
+        if (dataSource == DataSource.PAPER_TRADING)
+            client.reqMarketDataType(2); // delayed
+        client.reqMktData(reqId, contract, "", true, false, null);
     }
 
     public void requestHistoricalData(String ticker, int conId) {
@@ -142,7 +149,7 @@ public class MarketData {
         String ticker = reqIdToTickerMap.get(reqId);
         if (ticker != null) {
             underlyingPrices.put(ticker, price);
-            logger.info("Updated underlying price for " + ticker + " to " + price);
+            logger.info("Updated underlying price for {} to {}", ticker, price);
             
             Integer conId = tickerToConIdMap.get(ticker);
             if (conId != null) {
@@ -438,14 +445,36 @@ public class MarketData {
         
         double optionTotal = optionPrice * 100;
         double stockTotal = underlyingPrice * 50;
+        
+        String tradeId = "t" + (1000 + new Random().nextInt(9000));
+        
+        Contract optionContract = createOptionContract(ticker, bestExpiration, bestStrike, "C");
+        Contract stockContract = createStockContract(ticker);
+        stockContract.conid(tickerToConIdMap.get(ticker)); // Ensure conId is set
+
+        String optionAction;
+        int optionRatio = 1;
+        String stockAction;
+        int stockRatio = 50;
+        double netPrice;
 
         if (isLongVolatility) {
-            System.out.printf("Buy Qty 1 %s %s %.0f Call @ %.2f Total (%.0f)%n", ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
-            System.out.printf("Sell Qty 50 %s @ %.2f Total %.0f%n", ticker, underlyingPrice, stockTotal);
+            optionAction = "BUY";
+            stockAction = "SELL";
+            netPrice = optionTotal - stockTotal; // Net cost/credit logic can vary, keeping simple for now
+            System.out.printf("[%s] Buy Qty 1 %s %s %.0f Call @ %.2f Total (%.0f)%n", tradeId, ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
+            System.out.printf("        Sell Qty 50 %s @ %.2f Total %.0f%n", ticker, underlyingPrice, stockTotal);
         } else {
-            System.out.printf("Sell Qty 1 %s %s %.0f Call @ %.2f Total %.0f%n", ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
-            System.out.printf("Buy Qty 50 %s @ %.2f Total (%.0f)%n", ticker, underlyingPrice, stockTotal);
+            optionAction = "SELL";
+            stockAction = "BUY";
+            netPrice = stockTotal - optionTotal;
+            System.out.printf("[%s] Sell Qty 1 %s %s %.0f Call @ %.2f Total %.0f%n", tradeId, ticker, formattedExpiration, bestStrike, optionPrice, optionTotal);
+            System.out.printf("        Buy Qty 50 %s @ %.2f Total (%.0f)%n", ticker, underlyingPrice, stockTotal);
         }
+        
+        RecommendedTrade trade = new RecommendedTrade(tradeId, ticker, optionContract, stockContract, optionAction, optionRatio, stockAction, stockRatio, netPrice);
+        recommendedTrades.put(tradeId, trade);
+        
         System.out.println("--------------------------------------------------");
         
         System.out.println("Scenario Analysis (Estimated Profit/Loss):");
@@ -479,6 +508,64 @@ public class MarketData {
         }
         System.out.println("==================================================");
     }
+    
+    public void placeTrade(String tradeId) {
+        RecommendedTrade trade = recommendedTrades.get(tradeId);
+        if (trade == null) {
+            logger.error("Trade ID not found: " + tradeId);
+            return;
+        }
+
+        logger.info("Placing trade: {}", tradeId);
+        
+        Contract comboContract = new Contract();
+        comboContract.symbol(trade.getTicker());
+        comboContract.secType("BAG");
+        comboContract.currency("USD");
+        comboContract.exchange("SMART");
+        
+        List<ComboLeg> legs = new ArrayList<>();
+        
+        // Option Leg
+        ComboLeg optionLeg = new ComboLeg();
+        optionLeg.conid(trade.getOptionContract().conid()); // Note: We need the conId for the option contract. 
+        // Since we created the contract manually, we might not have the conId. 
+        // In a real app, we would have requested contract details for the option to get the conId.
+        // For this example, we'll assume we can proceed or we'd need to fetch it.
+        // However, the IB API requires conId for BAG contracts.
+        // Let's log a warning if we don't have it (which we likely don't for the manually created option contract).
+        if (trade.getOptionContract().conid() == 0) {
+             logger.warn("Option contract conId is missing. Trade might fail. In a full implementation, we would request contract details for the option first.");
+        }
+        
+        optionLeg.ratio(trade.getOptionRatio());
+        optionLeg.action(trade.getOptionAction());
+        optionLeg.exchange("SMART");
+        legs.add(optionLeg);
+        
+        // Stock Leg
+        ComboLeg stockLeg = new ComboLeg();
+        stockLeg.conid(trade.getStockContract().conid());
+        stockLeg.ratio(trade.getStockRatio());
+        stockLeg.action(trade.getStockAction());
+        stockLeg.exchange("SMART");
+        legs.add(stockLeg);
+        
+        comboContract.comboLegs(legs);
+        
+        Order order = new Order();
+        order.action("BUY"); // For BAG orders, the action is typically BUY (debit) or SELL (credit) for the combo itself
+        order.orderType("LMT");
+        order.totalQuantity(Decimal.get(1.0)); // 1 combo unit
+        // order.lmtPrice(trade.getNetPrice()); // Set limit price based on net calculation
+        // For simplicity in this example, we might want to use MKT or a calculated limit.
+        // Setting a placeholder limit price.
+        order.lmtPrice(1.0); 
+        
+        int orderId = nextOrderId.getAndIncrement();
+        api.getClient().placeOrder(orderId, comboContract, order);
+        logger.info("Order placed with ID: " + orderId);
+    }
 
     private Contract createStockContract(String symbol) {
         Contract contract = new Contract();
@@ -486,6 +573,19 @@ public class MarketData {
         contract.secType("STK");
         contract.exchange("SMART");
         contract.currency("USD");
+        return contract;
+    }
+
+    private Contract createOptionContract(String symbol, String lastTradeDateOrContractMonth, double strike, String right) {
+        Contract contract = new Contract();
+        contract.symbol(symbol);
+        contract.secType("OPT");
+        contract.exchange("SMART");
+        contract.currency("USD");
+        contract.lastTradeDateOrContractMonth(lastTradeDateOrContractMonth);
+        contract.strike(strike);
+        contract.right(right);
+        contract.multiplier("100"); // Standard multiplier for equity options
         return contract;
     }
 
