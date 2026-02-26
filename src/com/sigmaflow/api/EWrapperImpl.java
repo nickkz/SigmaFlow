@@ -2,13 +2,16 @@ package com.sigmaflow.api;
 
 import com.ib.client.protobuf.*;
 import com.sigmaflow.data.MarketData;
+import com.sigmaflow.trading.PortfolioManager;
 import com.ib.client.*;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class EWrapperImpl implements EWrapper {
 
@@ -17,6 +20,13 @@ public class EWrapperImpl implements EWrapper {
     private final EClientSocket client;
     private final EReaderSignal readerSignal;
     private MarketData marketData; // Reference to the MarketData instance
+    private PortfolioManager portfolioManager; // Reference to the PortfolioManager instance
+    
+    // Map to track historical data requests for portfolio positions: reqId -> symbol
+    private final Map<Integer, String> portfolioRequestMap = new ConcurrentHashMap<>();
+    // Map to store historical bars for portfolio positions temporarily
+    private final Map<Integer, List<Double>> portfolioHistoricalData = new ConcurrentHashMap<>();
+
 
     public EWrapperImpl() {
         this.readerSignal = new EJavaSignal();
@@ -25,6 +35,14 @@ public class EWrapperImpl implements EWrapper {
 
     public void setMarketData(MarketData marketData) {
         this.marketData = marketData;
+    }
+    
+    public void setPortfolioManager(PortfolioManager portfolioManager) {
+        this.portfolioManager = portfolioManager;
+    }
+    
+    public void addPortfolioRequest(int reqId, String symbol) {
+        portfolioRequestMap.put(reqId, symbol);
     }
 
     public void connect(String host, int port, int clientId) {
@@ -76,19 +94,13 @@ public class EWrapperImpl implements EWrapper {
     }
 
     @Override
-    public void error(int i, long l, int i1, String s, String s1) {
-
-    }
-
-    public void error(int id, int errorCode, String errorMsg, String advancedOrderRejectJson) {
-        String error = "API Error. Id: " + id + ", Code: " + errorCode + ", Msg: " + errorMsg;
+    public void error(int i, long l, int errorCode, String errorMsg, String advancedOrderRejectJson) {
+        String error = "API Error. i,l Ids: " + i + " " + l + ", Code: " + errorCode + ", Msg: " + errorMsg;
         if (advancedOrderRejectJson != null && !advancedOrderRejectJson.isEmpty()) {
             error += ", AdvancedJson: " + advancedOrderRejectJson;
         }
         logger.error(error);
     }
-
-    // --- Market Data and Contract Details ---
 
     @Override
     public void nextValidId(int orderId) {
@@ -114,7 +126,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void securityDefinitionOptionalParameter(int reqId, String exchange, int underlyingConId, String tradingClass, String multiplier, Set<String> expirations, Set<Double> strikes) {
-        logger.debug("Received Option Chain Parameters for ReqId: {}", reqId);
+        logger.info("Received Option Chain Parameters for ReqId: " + reqId);
         if (marketData != null) {
             marketData.processOptionChainParameters(reqId, expirations, strikes);
         }
@@ -122,7 +134,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void securityDefinitionOptionalParameterEnd(int reqId) {
-        logger.info("Finished receiving option chain parameters for ReqId: {}", reqId);
+        logger.info("Finished receiving option chain parameters for ReqId: " + reqId);
     }
 
     @Override
@@ -133,7 +145,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attrib) {
-        logger.debug(String.format("Tick Price. Ticker Id: %d, Field: %s, Price: %f", tickerId, TickType.getField(field), price));
+        logger.info(String.format("Tick Price. Ticker Id: %d, Field: %s, Price: %f", tickerId, TickType.getField(field), price));
         if (marketData != null) {
             MarketData.RequestType requestType = marketData.getRequestType(tickerId);
             if (requestType == MarketData.RequestType.UNDERLYING_MARKET_DATA) {
@@ -146,7 +158,7 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void tickSize(int tickerId, int field, Decimal size) {
-        logger.debug(String.format("Tick Size. Ticker Id: %d, Field: %s, Size: %s", tickerId, TickType.getField(field), size));
+        logger.info(String.format("Tick Size. Ticker Id: %d, Field: %s, Size: %s", tickerId, TickType.getField(field), size));
     }
 
     @Override
@@ -156,7 +168,11 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void historicalData(int reqId, Bar bar) {
-        if (marketData != null) {
+        if (portfolioRequestMap.containsKey(reqId)) {
+            // This is a portfolio historical data request
+            // We need to calculate returns, so we store the close prices first
+            portfolioHistoricalData.computeIfAbsent(reqId, k -> new ArrayList<>()).add(bar.close());
+        } else if (marketData != null) {
             MarketData.RequestType requestType = marketData.getRequestType(reqId);
             if (requestType == MarketData.RequestType.HISTORICAL_DATA) {
                 marketData.addHistoricalBar(reqId, bar);
@@ -170,8 +186,47 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void historicalDataEnd(int reqId, String startDateStr, String endDateStr) {
-        if (marketData != null) {
+        if (portfolioRequestMap.containsKey(reqId)) {
+            String symbol = portfolioRequestMap.remove(reqId);
+            List<Double> prices = portfolioHistoricalData.remove(reqId);
+            if (prices != null && portfolioManager != null) {
+                // Calculate returns
+                List<Double> returns = new ArrayList<>();
+                for (int i = 1; i < prices.size(); i++) {
+                    returns.add(Math.log(prices.get(i) / prices.get(i - 1)));
+                }
+                portfolioManager.addHistoricalReturns(symbol, returns);
+            }
+        } else if (marketData != null) {
             marketData.historicalDataEnd(reqId, startDateStr, endDateStr);
+        }
+    }
+    
+    // --- Portfolio and Account Callbacks ---
+
+    @Override
+    public void accountSummary(int reqId, String account, String tag, String value, String currency) {
+        if (portfolioManager != null) {
+            portfolioManager.handleAccountSummary(tag, value);
+        }
+    }
+
+    @Override
+    public void accountSummaryEnd(int reqId) {
+        logger.info("Account summary download finished.");
+    }
+
+    @Override
+    public void position(String account, Contract contract, Decimal pos, double avgCost) {
+        if (portfolioManager != null) {
+            portfolioManager.handlePosition(account, contract, pos, avgCost);
+        }
+    }
+
+    @Override
+    public void positionEnd() {
+        if (portfolioManager != null) {
+            portfolioManager.onPositionEnd();
         }
     }
 
@@ -254,18 +309,6 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void marketDataType(int reqId, int marketDataType) {}
-
-    @Override
-    public void position(String account, Contract contract, Decimal pos, double avgCost) {}
-
-    @Override
-    public void positionEnd() {}
-
-    @Override
-    public void accountSummary(int reqId, String account, String tag, String value, String currency) {}
-
-    @Override
-    public void accountSummaryEnd(int reqId) {}
 
     @Override
     public void verifyMessageAPI(String apiData) {}
@@ -787,18 +830,14 @@ public class EWrapperImpl implements EWrapper {
     }
 
     @Override
-    public void displayGroupListProtoBuf(DisplayGroupListProto.DisplayGroupList displayGroupList) {
-
-    }
-
-    @Override
-    public void displayGroupUpdatedProtoBuf(DisplayGroupUpdatedProto.DisplayGroupUpdated displayGroupUpdated) {
-
-    }
-
-    @Override
     public void marketDepthExchangesProtoBuf(MarketDepthExchangesProto.MarketDepthExchanges marketDepthExchanges) {}
     
     @Override
     public void commissionAndFeesReport(CommissionAndFeesReport commissionAndFeesReport) {}
+
+    @Override
+    public void displayGroupListProtoBuf(DisplayGroupListProto.DisplayGroupList displayGroupList) {}
+
+    @Override
+    public void displayGroupUpdatedProtoBuf(DisplayGroupUpdatedProto.DisplayGroupUpdated displayGroupUpdated) {}
 }
