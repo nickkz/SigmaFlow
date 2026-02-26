@@ -1,5 +1,6 @@
-/archive/out/production/SigmaFlow/com/company/api/EWrapperImpl.class
-/archive/out/production/SigmaFlow/com/sigmaflow/api/EWrapperImpl.class
-/out/production/SigmaFlow/com/sigmaflow/api/EWrapperImpl.class
-/lib/apache-log4j-2.25.2-bin.zip
-/lib/log4j-cassandra-2.25.2.jar
+/archive/
+/lib/
+/data
+/notes/
+/out/
+/.idea/
