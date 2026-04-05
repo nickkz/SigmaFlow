@@ -150,7 +150,7 @@ public class MarketData {
         String ticker = reqIdToTickerMap.get(reqId);
         if (ticker != null) {
             underlyingPrices.put(ticker, price);
-            logger.info("Updated underlying price for {} to {}", ticker, price);
+            logger.debug("Updated underlying price for {} to {}", ticker, price);
             
             Integer conId = tickerToConIdMap.get(ticker);
             if (conId != null) {

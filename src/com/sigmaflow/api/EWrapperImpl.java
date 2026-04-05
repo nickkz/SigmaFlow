@@ -111,7 +111,9 @@ public class EWrapperImpl implements EWrapper {
                 String[] symbolArr = symbolFull.split("/");
                 symbol = symbolArr[0];
             }
-            portfolioManager.handleDataError(symbol);
+            if (portfolioManager != null) {
+                portfolioManager.handleDataError(symbol);
+            }
         }
         else
             logger.error(error);
@@ -205,12 +207,7 @@ public class EWrapperImpl implements EWrapper {
             String symbol = portfolioRequestMap.remove(reqId);
             List<Double> prices = portfolioHistoricalData.remove(reqId);
             if (prices != null && portfolioManager != null) {
-                // Calculate returns
-                List<Double> returns = new ArrayList<>();
-                for (int i = 1; i < prices.size(); i++) {
-                    returns.add(Math.log(prices.get(i) / prices.get(i - 1)));
-                }
-                portfolioManager.addHistoricalReturns(symbol, returns);
+                portfolioManager.addHistoricalData(symbol, prices);
             }
         } else if (marketData != null) {
             marketData.historicalDataEnd(reqId, startDateStr, endDateStr);
